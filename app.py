@@ -87,27 +87,52 @@ if prompt := st.chat_input("Ask me anything..."):
 
         response_placeholder = st.empty()
 
-        for event in events:
-            last_msg = event["messages"][-1]
+        try:
+            for event in events:
+                last_msg = event["messages"][-1]
 
-            # Agent decided to call a tool → show in expander
-            if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-                for tc in last_msg.tool_calls:
-                    tool_name = tc["name"]
-                    tool_input = tc["args"]
-                    tool_calls_made.append((tool_name, tool_input))
-                    with st.expander(f"🔧 Using tool: `{tool_name}`", expanded=False):
-                        st.json(tool_input)
+                # Agent decided to call a tool → show in expander
+                if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                    for tc in last_msg.tool_calls:
+                        tool_name = tc["name"]
+                        tool_input = tc["args"]
+                        tool_calls_made.append((tool_name, tool_input))
+                        with st.expander(f"🔧 Using tool: `{tool_name}`", expanded=False):
+                            st.json(tool_input)
 
-            # Tool returned a result → show briefly
-            elif isinstance(last_msg, ToolMessage):
-                with st.expander(f"📥 Tool result: `{last_msg.name}`", expanded=False):
-                    st.markdown(last_msg.content[:800] + ("..." if len(last_msg.content) > 800 else ""))
+                # Tool returned a result → show briefly
+                elif isinstance(last_msg, ToolMessage):
+                    with st.expander(f"📥 Tool result: `{last_msg.name}`", expanded=False):
+                        st.markdown(last_msg.content[:800] + ("..." if len(last_msg.content) > 800 else ""))
 
-            # Final AI response (no tool calls)
-            elif isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
-                full_response = last_msg.content
-                response_placeholder.markdown(full_response)
+                # Final AI response (no tool calls)
+                elif isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
+                    full_response = last_msg.content
+                    response_placeholder.markdown(full_response)
+
+        except Exception as e:
+            # Groq sometimes rejects tool calls after long histories — reset and retry
+            err_str = str(e)
+            if "Failed to call a function" in err_str or "400" in err_str:
+                response_placeholder.warning(
+                    "The model had trouble with tool formatting. Resetting conversation history and retrying..."
+                )
+                # Reset lc_messages to just the current user message — clears bad history
+                st.session_state.lc_messages = [HumanMessage(content=prompt)]
+                try:
+                    retry_events = st.session_state.graph.stream(
+                        {"messages": st.session_state.lc_messages},
+                        stream_mode="values",
+                    )
+                    for event in retry_events:
+                        last_msg = event["messages"][-1]
+                        if isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
+                            full_response = last_msg.content
+                            response_placeholder.markdown(full_response)
+                except Exception:
+                    response_placeholder.error("Still failing — try clicking '🗑️ Clear conversation' in the sidebar and start fresh.")
+            else:
+                response_placeholder.error(f"Error: {err_str}")
 
         # ── Save to Mem0 after response ───────────────────────────────────────
         if full_response:
